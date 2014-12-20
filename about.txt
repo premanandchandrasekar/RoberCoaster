@@ -1,0 +1,13 @@
+
+
+Government schemes management has always been an hectic task. Building a system to crowdsource and gather data is trivial but getting the users to use the application easily and comfortably is the harder part of the problem. On analysing the difficulties from the user's perspective, account creation, logging in and account maintenance is his/her roadblock and for non-tech users, the user experience is the problem.
+
+We have come up with a solution that handles both these users by implementing some methods that are not trivially used in regular systems.
+
+- Image recognition: Users can just show their PAN card to the computer and it will populate a list of schemes that they are eligible for.
+- Multiple language support for the schemes with instant translation
+- Real time searching, meaning the user never has to click on a "search" button. Just fill in your criteria or show your PAN card and you get a list of schemes you are eligible for
+- No user account: There is no need for a user to login or signup. Any Indian citizen can access the data
+
+
+For crowd sourcing, we have an add scheme page and an update scheme page. So any user with a valid government ID proof, can submit the schemes they know about. The schemes are stored and added to the dataset once its acknowledged by a NGO or other authorized person. In order to make it easier, the user has the option to enter the data he knows about the scheme as natural language. We use an natural language processing engine to extract the data out of it.

@@ -1,0 +1,4 @@
+{"computers":["dell.json", "lenovo.json", "mac.json", "vaio.json"],
+"phones":["iphone.json", "motog.json", "s5.json", "xperia.json"],
+"shoes":["adidas.json","nike.json","puma.json","reebok.json"]
+}

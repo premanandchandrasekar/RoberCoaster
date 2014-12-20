@@ -1,0 +1,625 @@
+from cyclone_server import config
+from twisted.internet import defer
+from cyclone import httpclient
+import json
+from twisted.python import log
+import sys
+import traceback
+import calendar
+
+settings = config.parse_config()
+settings = settings['neo4j']
+
+base_url = 'http://%s:%d/db/data/' % (settings.get('host'),
+        settings.get('port'))
+
+ADD_PROJECT_QUERY = "START n=node:node_auto_index(guid={owner})"\
+        " CREATE unique n-[r:COLLABORATES_IN]->(m {guid:{prjGuid}})"\
+        " SET m.ctype='prj'"\
+        " SET m.pid = {prjId}"\
+        " SET m.nm={prjName}"\
+        " RETURN r,m"
+
+ADD_USER_TO_PROJECT = "START a=node:node_auto_index(guid={usrGuid}), b=node:node_auto_index(guid={prjGuid})"\
+        " CREATE UNIQUE a-[r:COLLABORATES_IN]->b"
+
+
+class Singleton(type):
+    _instances = {}
+
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
+        return cls._instances[cls]
+
+
+class RestClient(object):
+    __metaclass__ = Singleton
+
+    @defer.inlineCallbacks
+    def cypher_query(self, query, dbase=None, **kwargs):
+        args = {'query': query}
+        if kwargs:
+            args["params"] = kwargs
+        #log.msg(args)
+        response = yield self.post_request('cypher', args, dbase)
+        defer.returnValue(response)
+
+    def __cypher_query_batch_request_body(self, qid, query, **kwargs):
+        args = {'query': query}
+        if kwargs:
+            args["params"] = kwargs
+        body = {
+                'method': 'POST',
+                'to': 'cypher',
+                'body': args,
+                'id': qid}
+        return body
+
+    def __create_node_batch_request_body(self, qid, **kwargs):
+        body = {
+                'method': 'POST',
+                'to': 'node',
+                'body': kwargs,
+                'id': qid}
+        return body
+
+    @defer.inlineCallbacks
+    def __post_batch_request(self, args, dbase=None):
+        response = yield self.post_request('batch', args, dbase)
+        defer.returnValue(response)
+
+    @defer.inlineCallbacks
+    def post_request(self, requestURL, requestArgs, dbase=None):
+        headers = {'Content-Type': ['application/json']}
+        url = base_url + requestURL
+        data = json.dumps(requestArgs)
+        try:
+            log.msg('Graph DB - Post URL %s' % (url,))
+            response = yield httpclient.fetch(url, method='POST',
+                    headers=headers, postdata=data)
+            #log.msg(data)
+            #log.msg(response.body)
+            if response.code < 200 or response.code > 400:
+                log.msg("Failure response from neo4J %s for the request %s" % (
+                    response.body, data))
+                if dbase:
+                    dbase.add_to_graph_queue(data, requestURL, False)
+            response = json.loads(response.body)
+            defer.returnValue(response)
+        except Exception:
+            log.msg('Error Updating Graph DB - %s : %s' % (
+                sys.exc_info()[0], traceback.format_exc()))
+            if dbase:
+                log.msg('Added to Graph Queue')
+                dbase.add_to_graph_queue(data, requestURL, False)
+        defer.returnValue(None)
+
+    @defer.inlineCallbacks
+    def __createNode(self, dbase, **kwargs):
+        response = yield self.post_request('node', kwargs, dbase)
+        defer.returnValue(response)
+
+    @defer.inlineCallbacks
+    def __addRelationship(self, fromNdId, toNdId, rel_name, dbase, **kwargs):
+        url = 'node/%d/relationships' % (fromNdId)
+        relArgs = {
+            "to": '%s/node/%d' % (base_url, toNdId),
+            "type": rel_name
+            }
+        if kwargs:
+            relArgs["data"] = kwargs
+        response = yield self.post_request(url, relArgs)
+        defer.returnValue(response)
+
+    def addUser(self, usr, newProjects, existingProjects, dbase=None):
+        if (not newProjects or len(newProjects) == 0)  and (not existingProjects or len(existingProjects) == 0):
+            self.__createNode(dbase, uid=usr._id, guid=usr.user_guid,
+                    nm=usr.user_name, ctype='usr')
+        else:
+            batch = []
+            batch.append(self.__create_node_batch_request_body(0, uid=usr._id, guid=usr.user_guid,
+                    nm=usr.user_name, ctype='usr'))
+            i = 1
+            for prj in newProjects:
+                batch.append(self.__cypher_query_batch_request_body(i, ADD_PROJECT_QUERY, owner=usr.user_guid,
+                    prjGuid=prj.guid, prjId=prj._id, prjName=prj.project_name))
+                i += 1
+            for projectGuid in existingProjects:
+                batch.append(self.__cypher_query_batch_request_body(i, ADD_USER_TO_PROJECT, usrGuid=usr.user_guid, prjGuid=projectGuid))
+                i += 1
+            self.__post_batch_request(batch, dbase)
+
+    def addProject(self, prj, ownerGuid, dbase=None):
+        self.cypher_query(ADD_PROJECT_QUERY, dbase, owner=ownerGuid, prjGuid=prj.guid, prjId=prj._id, prjName=prj.project_name)
+
+    def deleteProject(self, projectGuid, dbase=None):
+        query = "START n = node:node_auto_index(guid={projectGuid})"\
+                " MATCH n-[r:HAS*0..]->m, m-[mn:MENTIONS*0..]->e, m<-[i:INCLUDES*0..]-dq,  n-[anyothers?]-()"\
+                " FOREACH(y in mn: DELETE y)"\
+                " FOREACH(x in r: DELETE x)"\
+                " FOREACH(z in i: DELETE z)"\
+                " DELETE m, n, anyothers"
+        self.cypher_query(query, dbase, projectGuid=projectGuid)
+
+    def addUserToProject(self, userGuid, projectGuid, dbase=None):
+        self.cypher_query(ADD_USER_TO_PROJECT, dbase, usrGuid=userGuid, prjGuid=projectGuid)
+
+    def removeUserFromProject(self, userGuid, projectGuid, dbase=None):
+        query = "START a = node:node_auto_index(guid={usrGuid}),  b = node:node_auto_index(guid={prjGuid})"\
+                " MATCH a-[r:COLLABORATES_IN]->b"\
+                " DELETE r"
+        self.cypher_query(query, dbase, usrGuid=userGuid, prjGuid=projectGuid)
+
+    
+    def deleteDocument(self, versionGuid, dbase=None):
+        query = "START n = node:node_auto_index(guid={dvGuid})"\
+                " MATCH n-[r]-()"\
+                " DELETE n, r"
+        self.cypher_query(query, dbase, dvGuid=versionGuid)
+
+    def moveDocument(self, versionGuid, newProjectGuid, prevProjectGuid, dbase=None):
+        batch = []
+        query = "START a = node:node_auto_index(guid={opGuid}),  b = node:node_auto_index(guid={dvGuid})"\
+                " MATCH a-[r:HAS]->b"\
+                " DELETE r"
+        batch.append(self.__cypher_query_batch_request_body(0, query, opGuid=prevProjectGuid, dvGuid=versionGuid))
+
+        query = "START n = node:node_auto_index(guid={npGuid}), b = node:node_auto_index(guid={dvGuid})"\
+                " MATCH b<-[i:INCLUDES]-dq<-[:QUERIED]-u, u-[c:COLLABORATES_IN]->n"\
+                " WITH count(c) as exists, i"\
+                " WHERE exists=0 "\
+                " DELETE i"
+        batch.append(self.__cypher_query_batch_request_body(1, query, npGuid=newProjectGuid, dvGuid=versionGuid))
+
+        query1 = "START a=node:node_auto_index(guid={npGuid}), b=node:node_auto_index(guid={dvGuid})"\
+                " CREATE UNIQUE a-[r:HAS]->b"
+        batch.append(self.__cypher_query_batch_request_body(2, query1, npGuid=newProjectGuid, dvGuid=versionGuid))
+        self.__post_batch_request(batch, dbase)
+
+    def addEntities(self, versionGuid, entities, dbase=None):
+        batch = []
+        for key in entities.keys():
+            if key == 'version':
+                continue
+            for val in entities[key]:
+                if len(batch) > 50:
+                    self.__post_batch_request(batch, dbase)
+                    batch = []
+                if isinstance(val, dict):
+                    batch.extend(self.addEntity(versionGuid, key, val, dbase=dbase, startIndex=len(batch), execute=False))
+                else:
+                    batch.extend(self.addEntity(versionGuid, key, {'tag': val, 'oc': 1}, dbase=dbase, startIndex=len(batch), execute=False))
+
+        return self.__post_batch_request(batch, dbase)
+
+    def addEntity(self, versionGuid, etype, entity, userGuid=None, dbase=None, startIndex=0, execute=True):
+        batch = []
+        tagnm = entity['tag'].lower()
+        query = "START n=node:node_auto_index(nm={enm})"\
+                        " WHERE n.ctype='ent' and n.etype={etype}"\
+                        " WITH count(*) as exists"\
+                        " WHERE exists=0 "\
+                        " CREATE (e {tag:{tag}, nm:{enm}, etype:{etype}, ctype:'ent'})"
+        batch.append(self.__cypher_query_batch_request_body(startIndex, query, etype=etype, enm=tagnm, tag=entity['tag']))
+
+        if userGuid:  # User Specific Entity
+            query1 = "start n=node:node_auto_index(nm={enm}), d=node:node_auto_index(guid={dvGuid})"\
+                    " WHERE n.ctype='ent' and n.etype={etype}"\
+                    " CREATE UNIQUE d-[r:MENTIONS]->n"\
+                    " SET r.oc={oc}"\
+                    " SET r.dflt=0"\
+                    " SET r.usr={usrGuid}"
+            batch.append(self.__cypher_query_batch_request_body(
+                startIndex + 1, query1, etype=etype, dvGuid=versionGuid, enm=tagnm, usrGuid=userGuid, oc=entity['oc']))
+        else:  # Default / System Identified entity
+            query1 = "start n=node:node_auto_index(nm={enm}), d=node:node_auto_index(guid={dvGuid})"\
+                    " WHERE n.ctype='ent' and n.etype={etype}"\
+                    " CREATE UNIQUE d-[r:MENTIONS]->n"\
+                    " SET r.oc={oc}"\
+                    " SET r.dflt=1"
+            batch.append(self.__cypher_query_batch_request_body(
+                startIndex + 1, query1, etype=etype, dvGuid=versionGuid, enm=tagnm, oc=entity['oc']))
+        if execute:
+            return self.__post_batch_request(batch, dbase)
+        else:
+            return batch
+
+    def addKeyWords(self, versionGuid, keywords, dbase=None):
+        batch = []
+        qid = 0
+        for keyword in keywords['KEYWORD']:
+            if len(batch) > 50:
+                self.__post_batch_request(batch, dbase)
+                batch = []
+            knm = keyword['tag'].lower()
+            query = "START n=node:node_auto_index(nm={enm})"\
+                        " WHERE n.ctype='ent' and n.etype='KEYWORD'"\
+                        " WITH count(*) as ex"\
+                        " WHERE ex=0 "\
+                        " CREATE (k {tag:{tag}, nm:{enm}, etype:'KEYWORD', ctype:'ent'})"
+            batch.append(self.__cypher_query_batch_request_body(qid, query, enm=knm, tag=keyword['tag']))
+            qid += 1
+            query1 = "start n=node:node_auto_index(nm={enm}), d=node:node_auto_index(guid={dvGuid})"\
+                        " WHERE n.ctype='ent' and n.etype='KEYWORD'"\
+                        " CREATE UNIQUE d-[r:MENTIONS]->n"\
+                        " SET r.oc = {oc}"\
+                        " set r.dflt=1"
+            batch.append(self.__cypher_query_batch_request_body(qid, query1, enm=knm, dvGuid=versionGuid, oc=keyword['oc']))
+            qid += 1
+        return self.__post_batch_request(batch, dbase)
+
+    @defer.inlineCallbacks
+    def documentsWithSameEntityInProject(self, tag, etype, projectGuid):
+        query = "START n=node:node_auto_index(nm={enm}), p=node:node_auto_index(guid={prjGuid})"\
+                " MATCH n<-[r:MENTIONS]-d<-[c:HAS]-p"\
+                " WHERE n.ctype='ent' AND n.etype={etype}"\
+                " RETURN d"
+        response = yield self.cypher_query(query, enm=tag.lower(), prjGuid=projectGuid, etype=etype)
+        response = self.__getDocumentsFromResponseWithLink(response, tag, etype)
+        defer.returnValue(response)
+
+    @defer.inlineCallbacks
+    def documentsWithSameEntity(self, tag, etype, userGuid):
+        query = "START n=node:node_auto_index(nm={enm}), u=node:node_auto_index(guid={usrGuid})"\
+                " MATCH n<-[r:MENTIONS]-d<-[h:HAS]-p<-[c:COLLABORATES_IN]-u"\
+                " WHERE n.ctype='ent' AND n.etype={etype}"\
+                " RETURN d"
+        response = yield self.cypher_query(query, enm=tag.lower(), usrGuid=userGuid, etype=etype)
+        response = self.__getDocumentsFromResponseWithLink(response, tag, etype)
+        defer.returnValue(response)
+
+    def __getDocumentsFromResponseWithLink(self, response, entity, etype):
+        data = {}
+        key = etype.lower()[0] + ":" + entity.lower()
+        data[key] = {'metadata': {'name': entity},
+                     'links': [],
+                     'id': key}
+        documents = response['data']
+        for doc in documents:
+            doc = doc[0]['data']
+            data[doc['guid']] = {'metadata': {'name': doc['nm'], 'type': 'document'},
+                    'links': [key],
+                    'id': doc['guid']}
+            data[key]['links'].append(doc['guid'])
+        return data
+
+    @defer.inlineCallbacks
+    def entitiesInDocumentVersion(self, versionGuid):
+        query = "START d=node:node_auto_index(guid={dvGuid})"\
+                " MATCH d-[m:MENTIONS]->t"\
+                " RETURN t"
+        response = yield self.cypher_query(query, dvGuid=versionGuid)
+        response = self.__getEntitiesFromResponseWithLink(response, versionGuid)
+        log.msg(response)
+        defer.returnValue(response)
+
+    def __getEntitiesFromResponseWithLink(self, response, versionGuid, data={}):
+        data[versionGuid] = {'metadata': {'type': 'document'},
+                'links': [],
+                'id': versionGuid}
+        entities = response['data']
+        for ent in entities:
+            ent = ent[0]['data']
+            key = ent['etype'].lower()[0] + ":" + ent['tag'].lower()
+            if data.get(key, None):
+                if versionGuid not in data[key]['links']:
+                    data[key]['links'].append(versionGuid)
+            else:
+                data[key] = {'metadata': {'name': ent['tag'], 'type': ent['etype']},
+                             'links': [versionGuid], 'id': key}
+            if key not in data[versionGuid]['links']:
+                data[versionGuid]['links'].append(key)
+        return data
+
+    @defer.inlineCallbacks
+    def entitiesInDocumentVersions(self, versionGuids):
+        batch = []
+        for i in range(len(versionGuids)):
+            versionGuid = versionGuids[i]
+            query = "START d=node:node_auto_index(guid={dvGuid})"\
+                " MATCH d-[m:MENTIONS]->t"\
+                " RETURN t"
+            batch.append(self.__cypher_query_batch_request_body(i, query, dvGuid=versionGuid))
+        response = yield self.__post_batch_request(batch)
+        data = {}
+        for subres in response:
+            qid = subres['id']
+            data = self.__getEntitiesFromResponseWithLink(subres['body'], versionGuids[qid], data)
+        log.msg(data)
+        defer.returnValue(data)
+
+    def addDisqueryInProject(self, dqName, dqGuid, usrGuid, prjGuid, versionGuids, dbase):
+        batch = []
+        batch.append(self.__create_node_batch_request_body(0, nm=dqName, guid=dqGuid, ctype='dq'))
+        query = "START q=node:node_auto_index(guid={dqGuid}), p=node:node_auto_index(guid={prjGuid}), u=node:node_auto_index(guid={usrGuid})"\
+                " CREATE UNIQUE u-[a:QUERIED]->q"\
+                " CREATE UNIQUE p-[b:QUERY]->q"
+        batch.append(self.__cypher_query_batch_request_body(1, query, dqGuid=dqGuid, prjGuid=prjGuid, usrGuid=usrGuid))
+        i = 2
+        for vGuid in versionGuids:
+            query1 = "START q=node:node_auto_index(guid={dqGuid}), d=node:node_auto_index(guid={dvGuid})"\
+                    " CREATE UNIQUE q-[r:INCLUDES]->d"\
+                    " SET r.exp=1"
+            batch.append(self.__cypher_query_batch_request_body(i, query1, dqGuid=dqGuid, dvGuid=vGuid))
+            i += 1
+        self.__post_batch_request(batch, dbase)
+
+    def addDisquery(self, dqName, dqGuid, usrGuid, versionGuids, dbase):
+        batch = []
+        batch.append(self.__create_node_batch_request_body(0, nm=dqName, guid=dqGuid, ctype='dq'))
+        query = "START q=node:node_auto_index(guid={dqGuid}), u=node:node_auto_index(guid={usrGuid})"\
+                " CREATE UNIQUE u-[a:QUERIED]->q"
+        batch.append(self.__cypher_query_batch_request_body(1, query, dqGuid=dqGuid, usrGuid=usrGuid))
+        i = 2
+        for vGuid in versionGuids:
+            query1 = "START q=node:node_auto_index(guid={dqGuid}), d=node:node_auto_index(guid={dvGuid})"\
+                    " CREATE UNIQUE q-[r:INCLUDES]->d"\
+                    " SET r.exp=1"
+            batch.append(self.__cypher_query_batch_request_body(i, query1, dqGuid=dqGuid, dvGuid=vGuid))
+            i += 1
+        self.__post_batch_request(batch, dbase)
+
+    def addDocVersionToDisquery(self, dqGuid, versionGuids, expanded=True, expand_key=None, dbase=None, expand_keytype=None):
+        batch = []
+        for i in range(len(versionGuids)):
+            if expanded:
+                query = "START q=node:node_auto_index(guid={dqGuid}), d=node:node_auto_index(guid={dvGuid})"\
+                        " CREATE UNIQUE q-[r:INCLUDES]->d"\
+                        " SET r.exp={expanded}"
+                batch.append(self.__cypher_query_batch_request_body(i, query, dqGuid=dqGuid, dvGuid=versionGuids[i], expanded=int(expanded)))
+            else:
+                query = "START q=node:node_auto_index(guid={dqGuid}), d=node:node_auto_index(guid={dvGuid})"\
+                        " CREATE UNIQUE q-[r:INCLUDES]->d"\
+                        " SET r.exp={expanded}"\
+                        " SET r.key={expand_key}"\
+                        " SET r.keytype={expand_keytype}"
+                batch.append(self.__cypher_query_batch_request_body(i, query, dqGuid=dqGuid, dvGuid=versionGuids[i], expanded=int(expanded), expand_key=expand_key, expand_keytype=expand_keytype))
+        self.__post_batch_request(batch, dbase)
+
+    def updateDisqueryName(self, dqGuid, dqName):
+        query = "START q=node:node_auto_index(guid={dqGuid})"\
+                 " SET q.nm={dqName}"
+        self.cypher_query(query, dqGuid=dqGuid, dqName=dqName)
+
+    @defer.inlineCallbacks
+    def getDisqueryByGuid(self, dqGuid):
+        query = "START q=node:node_auto_index(guid={dqGuid})"\
+                " MATCH q-[r:INCLUDES]->d-[m?:MENTIONS]->e"\
+                " RETURN  r.exp,r.key?, r.keytype?, d, collect(e)"
+        response = yield self.cypher_query(query, dqGuid=dqGuid)
+        response = self.__getDisqueryFromResponse(response)
+        defer.returnValue(response)
+
+    def __getDisqueryFromResponse(self, response):
+        data = response['data']
+        dqData = {}
+        for d in data:
+            is_expanded = d[0]
+            doc = d[3]['data']
+            dqData[doc['guid']] = {'metadata': {'type': 'document',
+                                                'name': doc['nm']},
+                                   'links': [],
+                                   'id': doc['guid']}
+            if is_expanded == 1:
+                entities = d[4]
+                for ent in entities:
+                    ent = ent['data']
+                    key = ent['etype'].lower()[0] + ":" + ent['tag'].lower()
+                    if dqData.get(key, None):
+                        if doc['guid'] not in dqData[key]['links']:
+                            dqData[key]['links'].append(doc['guid'])
+                    else:
+                        dqData[key] = {'metadata': {'name': ent['tag'], 'type': ent['etype']},
+                                       'links': [doc['guid']], 'id': key}
+                    if key not in dqData[doc['guid']]['links']:
+                        dqData[doc['guid']]['links'].append(key)
+            else:
+                tag = d[1]
+                etype = d[2] or 'KEYWORD'
+                key = tag.lower()
+                if len(key) < 2 or (key[1] != ":" and key[0] not in ['p', 'o', 'l', 'k']):
+                    key = etype.lower()[0] + ":" + tag.lower()
+                else:
+                    tag = key[2:]
+                if key in dqData:
+                    if doc['guid'] not in dqData[key]['links']:
+                        dqData[key]['links'].append(doc['guid'])
+                else:
+                    dqData[key] = {'metadata': {'name': tag, 'type': etype},
+                                   'links': [doc['guid']], 'id': key}
+                if key not in dqData[doc['guid']]['links']:
+                    dqData[doc['guid']]['links'].append(key)
+        return dqData
+
+    def deleteDisquery(self, dqGuid, usrGuid):
+        query = "START q=node:node_auto_index(guid={dqGuid})"\
+                " MATCH q-[r]-(), q-[:QUERIED]-u"\
+                " WHERE u.guid = {usrGuid}"\
+                " DELETE q,r"
+        self.cypher_query(query, dqGuid=dqGuid, usrGuid=usrGuid)
+
+    def changeDisqueryOwner(self, Uid, Oid, Pid, dqGuids, dbase=None):
+        batch = []
+        query = "START usr=node:node_auto_index(uid={Uid}),"\
+                " prj=node:node_auto_index(pid={Pid})"\
+                " MATCH prj-[r:QUERY]->(dq)<-[q:QUERIED]-usr"\
+                " DELETE q"
+        batch.append(self.__cypher_query_batch_request_body(0, query, Uid=Uid, Pid=Pid))
+
+        query1 = "START dq=node:node_auto_index(ctype='dq'), owr=node:node_auto_index(uid={Oid})"\
+                 " WHERE dq.guid IN {dqGuids}"\
+                 " CREATE UNIQUE dq<-[r:QUERIED]-owr"
+        batch.append(self.__cypher_query_batch_request_body(1, query1, Oid=Oid, dqGuids=dqGuids))
+        self.__post_batch_request(batch, dbase)
+
+    @defer.inlineCallbacks
+    def countOfRelatedEntitiesInDocument(self, versionGuid, userGuid):
+        query = "START d=node:node_auto_index(guid={dvGuid}), u=node:node_auto_index(guid={uGuid})"\
+                " MATCH d-[m:MENTIONS]->e<-[n:MENTIONS]-dc<-[h:HAS]-p<-[c:COLLABORATES_IN]-u"\
+                " RETURN count(distinct(e))"
+        response = yield self.cypher_query(query, dvGuid=versionGuid, uGuid=userGuid)
+        response = response['data'][0][0]
+        defer.returnValue(response)
+
+    @defer.inlineCallbacks
+    def countOfEntitiesInDocument(self, versionGuid):
+        query = "START d=node:node_auto_index(guid={dvGuid})"\
+                " MATCH d-[m:MENTIONS]->e"\
+                " RETURN count(e)"
+        response = yield self.cypher_query(query, dvGuid=versionGuid)
+        response = response['data'][0][0]
+        defer.returnValue(response)
+
+    @defer.inlineCallbacks
+    def countOfNewEntitiesInDocument(self, versionGuid, userGuid):
+        query = "START d=node:node_auto_index(guid={dvGuid}), u=node:node_auto_index(guid={uGuid})"\
+                " MATCH d-[m:MENTIONS]->e<-[n?:MENTIONS]-dc<-[h:HAS]-p<-[c:COLLABORATES_IN]-u"\
+                " WITH e, count(n) as connections"\
+                " WHERE connections = 0"\
+                " RETURN count(distinct(e))"
+        response = yield self.cypher_query(query, dvGuid=versionGuid, uGuid=userGuid)
+        response = response['data'][0][0]
+        defer.returnValue(response)
+
+    def deleteDocFromDisquery(self, dqGuid, versionGuid):
+        query = "START q=node:node_auto_index(guid={dqGuid}), d=node:node_auto_index(guid={versionGuid})"\
+                " MATCH q-[r:INCLUDES]->d"\
+                " DELETE r"
+        self.cypher_query(query, dqGuid=dqGuid, versionGuid=versionGuid)
+
+    def deleteDocsFromDisquery(self, dqGuid, versionGuids, dbase=None):
+        batch = []
+        i = 0
+        for versionGuid in versionGuids:
+            query = "START q = node:node_auto_index(guid={dqGuid}),  d = node:node_auto_index(guid={versionGuid})"\
+                    " MATCH q-[r:INCLUDES]->d"\
+                    " DELETE r"
+            batch.append(self.__cypher_query_batch_request_body(i, query, dqGuid=dqGuid, versionGuid=versionGuid))
+            i += 1
+        self.__post_batch_request(batch, dbase)
+
+    @defer.inlineCallbacks
+    def documentEntitiesWithRelatedDocuments(self, versionGuid, userGuid):
+        query = "START d=node:node_auto_index(guid={dvGuid}), u=node:node_auto_index(guid={uGuid})"\
+                " MATCH d-[m:MENTIONS]->e<-[n:MENTIONS]-dc<-[h:HAS]-p<-[c:COLLABORATES_IN]-u"\
+                " RETURN d, e, collect(dc)"
+        response = yield self.cypher_query(query, dvGuid=versionGuid, uGuid=userGuid)
+        response = self.__getDisqueryDataForDocumentEntities(versionGuid, response)
+
+        log.msg(response)
+        defer.returnValue(response)
+
+    def __getDisqueryDataForDocumentEntities(self, versionGuid, response):
+        data = response['data']
+        dqData = {}
+        i = 0
+        for d in data:
+            if i == 0:
+                doc = d[0]['data']
+                dqData[doc['guid']] = {'metadata': {'type': 'document',
+                                                'name': doc['nm']},
+                                                'links': [],
+                                                'id': versionGuid}
+
+            ent = d[1]['data']
+            tag = ent['tag']
+            tagId = ent['etype'].lower()[0] + ":" + tag.lower()
+            if dqData.get(tagId, None):
+                if versionGuid not in dqData[tagId]['links']:
+                    dqData[tagId]['links'].append(versionGuid)
+            else:
+                dqData[tagId] = {'metadata': {'name': tag, 'type': ent['etype']},
+                        'links': [versionGuid], 'id': tagId}
+
+            if tagId not in dqData[versionGuid]['links']:
+                dqData[versionGuid]['links'].append(tagId)
+
+            linkedDocs = d[2]
+            for linkedDoc in linkedDocs:
+                linkedDoc = linkedDoc['data']
+                if not dqData.get(linkedDoc['guid'], None):
+                    dqData[doc['guid']] = {'metadata': {'type': 'document',
+                                                'name': linkedDoc['nm']},
+                                                'links': [tagId],
+                                                'id': linkedDoc['guid']}
+                else:
+                    if tagId not in dqData[versionGuid]['links']:
+                        dqData[linkedDoc['guid']]['links'].append(tagId)
+
+                if linkedDoc['guid'] not in dqData[tagId]['links']:
+                    dqData[tagId]['links'].append(linkedDoc['guid'])
+
+        return dqData
+
+    @defer.inlineCallbacks
+    def getPathInDisquery(self, dqGuid, fromNode, toNode):
+        fromNode['query'] = 'guid={fGuid}' if fromNode['type'] == 'document' else 'nm={fGuid}'
+        toNode['query'] = 'guid={lGuid}' if toNode['type'] == 'document' else 'nm={lGuid}'
+        query = "START a=node:node_auto_index(" + fromNode['query'] + "),"\
+                " b=node:node_auto_index(" + toNode['query'] + "), dq=node:node_auto_index(guid={dqGuid})"\
+                " MATCH p=allshortestpaths(a-[:MENTIONS*..]-b)"\
+                " WITH p, dq, a"\
+                " WHERE all(n in tail(nodes(p)) WHERE (n.ctype = 'ent' and n.nm<>a.nm?) or dq-->n)"\
+                " RETURN nodes(p)"\
+                " ORDER BY LENGTH(p)"
+        response = yield self.cypher_query(query, fGuid=fromNode['id'], lGuid=toNode['id'], dqGuid=dqGuid)
+        response = self.__getPathNodes(response)
+
+        defer.returnValue(response)
+
+    def __getPathNodes(self, response):
+        r_paths = []
+        paths = response['data']
+        hash_dict = {}
+        for path in paths:
+            nodes = path[0]
+            r_nodes = []
+            for node in nodes:
+                nodeData = node['data']
+                if nodeData['ctype'] == 'doc':
+                    r_nodes.append(nodeData['guid'])
+                else:
+                    tagId = nodeData['etype'].lower()[0] + ":" + nodeData['tag'].lower()
+                    r_nodes.append(tagId)
+            path_hash = "".join(r_nodes)
+            if path_hash in hash_dict:
+                continue
+            hash_dict[path_hash] = 1
+            r_paths.append(r_nodes)
+        return r_paths
+
+    @defer.inlineCallbacks
+    def entitiesAcrossCorpus(self, versionGuid, usrGuid):
+        query = "START doc=node:node_auto_index(guid={dvGuid}),"\
+                " u=node:node_auto_index(guid={usrGuid})"\
+                " MATCH doc-[:MENTIONS]->e"\
+                " WITH doc, e, u"\
+                " MATCH e<-[:MENTIONS]-d<-[h:HAS]-p<-[c:COLLABORATES_IN]-u"\
+                " RETURN d, collect(e)"
+        response = yield self.cypher_query(query, dvGuid=versionGuid, usrGuid=usrGuid)
+        response = self.__getEntitiesAcrossCorpus(response, versionGuid)
+        defer.returnValue(response)
+
+    def __getEntitiesAcrossCorpus(self, response, versionGuid):
+        data = response['data']
+        dqData = {}
+        for d in data:
+            doc = d[0]['data']
+            dqData[doc['guid']] = {'metadata': {'type': 'document',
+                                                'name': doc['nm']},
+                                   'links': [],
+                                   'id': doc['guid']}
+            entities = d[1]
+            for ent in entities:
+                ent = ent['data']
+                key = ent['etype'].lower()[0] + ":" + ent['tag'].lower()
+                if dqData.get(key, None):
+                    if doc['guid'] not in dqData[key]['links']:
+                        dqData[key]['links'].append(doc['guid'])
+                else:
+                    dqData[key] = {'metadata': {'name': ent['tag'], 'type': ent['etype']},
+                                   'links': [doc['guid']], 'id': key}
+                if key not in dqData[doc['guid']]['links']:
+                    dqData[doc['guid']]['links'].append(key)
+        return dqData

@@ -1,0 +1,73 @@
+[server]
+debug = true
+xheaders = false
+xsrf_cookies = true
+cookie_secret = WlApyA3PQsyLg/w8Cji/m4RZTBmk7UI6sthj4RtaAPU=
+enable_logging = true
+merge_files = true
+enable_caching = yes
+enable_analytics = yes
+base_url = "http://localhost:8888"
+
+[postgresql]
+enabled  = yes
+host     = <db-host>
+port     = 5432
+database = disquery
+username = disquery
+password = 9IxZPT6tcNph
+poolsize = 10
+
+#Bit.ly access token
+[bitly]
+enabled = yes
+key = 7e08e887c789e2f5ce1449aebb93ec19856ca541
+
+[frontend]
+locale_path   = frontend/locale
+static_path   = frontend/static
+template_path = frontend/template
+project_selection = no
+
+#SearchEngine
+[search_engine]
+host                		= <es-host>
+port                		= 9200
+index       	    		= <index>
+document_type       		= doc
+project_type	    		= prj
+collaborator_type   		= docusr
+user_type	        	= usr
+project_collaborator_type 	= prjusr
+document_meta_type       	= docmeta
+watchword_type			= watchkw
+disquery_type       		= dq
+disquery_note_type  		= dqnote
+feed_host			= <es-host>
+feed_port			= 9200 
+subscription_index		= feedlist
+subscription_type		= feedmeta
+user_subscription_type		= userfeed
+feeditem_index			= feed
+feeditem_type			= item
+voc_host			= <es-host>
+voc_port			= 9200 
+voc_index		= vocdev
+review_type		= doc
+
+
+#neo4j config
+[neo4j]
+host = <neo4j-host>
+port = 7474
+
+[redis]
+enabled = yes
+host = 127.0.0.1
+port = 6379
+dbid = 0
+poolsize = 10
+
+#Jobs
+[scheduled_jobs]
+jobs = []  

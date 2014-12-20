@@ -1,0 +1,108 @@
+from cyclone_server.amqp import TaskQueue, TaskQueueClient
+import socket
+import traceback
+from twisted.internet import task
+from twisted.internet import reactor, defer, protocol
+import config
+import sys
+import os
+import argparse
+from twisted.enterprise.adbapi import ConnectionPool
+from psycopg2.extras import NamedTupleConnection
+from twisted.python import log
+from cyclone_server.searchengine import SearchEngine
+
+
+class DisqueryWorker(TaskQueueClient):
+    ctr = 0
+
+    @classmethod
+    def connect(cls, rabbitmq_settings, job_settings, redis_settings):
+        queue = TaskQueue(rabbitmq_settings)
+        return cls(queue, job_settings, redis_settings)
+
+    def _setup_scheduled_jobs(self, jobs_conf):
+        for job in jobs_conf:
+            l = task.LoopingCall(getattr(self, job.get("worker")),
+                    job.get("frequency"))
+            l.start(job.get("frequency") * 60)
+
+    def __init__(self, queue, jobs_conf, redis_conf):
+        TaskQueueClient.__init__(self, queue)
+        reactor.resolve(socket.gethostname()).addCallback(
+            self._got_server_ip)
+        #self.redis_cache = RedisCache(redis_conf)
+        reactor.callLater(30, self._setup_scheduled_jobs, jobs_conf)
+
+    def _got_server_ip(self, ip):
+        self.server_ip = ip
+
+    def worker_fetch_rss_feeds(self, queue_name, message, queue_obj):
+        from cyclone_server.workers.feedfinder import FeedFetcher
+        finder = FeedFetcher(self)
+        finder.execute(queue_name, message, queue_obj)
+
+
+def pg_connectionpool(settings):
+    conf = settings.get("postgresql_settings")
+    if conf:
+        postgres_connection_settings = dict(
+            host=conf.host, port=conf.port,
+            database=conf.database, user=conf.username,
+            password=conf.password,
+            cp_min=1, cp_max=conf.poolsize,
+            cp_reconnect=True, cp_noisy=settings['debug'],
+            connection_factory=NamedTupleConnection)
+        return ConnectionPool("psycopg2", **postgres_connection_settings)
+
+
+def redis_connection_settings(settings):
+    conf = settings.get("redis_settings")
+    return conf
+
+
+def rabbitmq_connection_settings(settings):
+    conf = settings.get("rabbitmq")
+    if conf:
+        return dict(spec_file=conf.spec_file,
+                    host=conf.host, port=conf.port, vhost=conf.vhost,
+                    user_name=conf.user_name, password=conf.password)
+
+
+def async_main(args):
+    settings = config.parse_config(args.config_file)
+    log.startLogging(sys.stdout)
+
+    pg_cpool = pg_connectionpool(settings)
+    rabbitmq_conf = rabbitmq_connection_settings(settings)
+    redis_conf = redis_connection_settings(settings)
+
+    job_conf = settings.get("jobs")
+    search_conf = settings.get("search_engine")
+
+    obj = DisqueryWorker.connect(rabbitmq_conf, job_conf, redis_conf)
+    log.msg("Started Worker")
+    obj.db = pg_cpool
+    obj.config_file = args.config_file
+    obj.base_url = settings.get('base_url')
+    obj.search_engine = SearchEngine(search_conf)
+    return obj
+
+
+def conf_validate(s):
+    if os.path.isfile(s):
+        return os.path.normpath(os.path.abspath(s))
+    raise argparse.ArgumentTypeError('Invalid config file: %s' % s)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Disquery worker pool")
+    parser.add_argument(
+        '--config', dest='config_file', type=conf_validate,
+        required=True, help='Configuration file')
+    args = parser.parse_args()
+    reactor.callWhenRunning(async_main, args)
+    reactor.run()
+
+if __name__ == '__main__':
+        main()

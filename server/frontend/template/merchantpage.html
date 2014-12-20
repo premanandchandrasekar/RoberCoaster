@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	
+	<!-- start: Meta -->
+   	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+	<title>PaypalDataHack</title>
+    <meta name="description" content="#" />
+    <meta name="author" content="#" /> 
+	<!-- end: Meta -->
+	
+	<!-- start: Mobile Specific -->
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<!-- end: Mobile Specific -->
+	
+	<!-- start: CSS -->
+      <!-- Achme theme css -->
+      <link href="{{ static_url('acme-theme/css/bootstrap.min.css') }}" rel="stylesheet">
+	  <link href="{{ static_url('acme-theme/css/style.min.css') }}" rel="stylesheet">
+	  <link href="{{ static_url('acme-theme/css/retina.min.css') }}" rel="stylesheet">
+
+      <!--CSS for autocomplete in filters-->
+      <link href="{{ static_url('tagit/css/jquery.tagit.css') }}" rel="stylesheet">
+      <link href="{{ static_url('tagit/css/tagit.css') }}" rel="stylesheet">
+
+      <!-- Disquery webapp css -->
+      <link rel="stylesheet" href="{{ static_url("bootstrap/css/dashboard.css") }}" />
+      <link href="{{ static_url('bootstrap/css/dashboard.css') }}" rel="stylesheet">
+	<!-- end: CSS -->
+
+	<!-- The HTML5 shim, for IE6-8 support of HTML5 elements -->
+	<!--[if lt IE 9]>
+	  	<script src="http://html5shim.googlecode.com/svn/trunk/html5.js"></script>
+		<script src="assets/js/respond.min.js"></script>
+		<link href="assets/css/ie.css" rel="stylesheet">
+	<![endif]-->
+	
+	<!--[if IE 9]>
+		<link id="ie9style" href="assets/css/ie9.css" rel="stylesheet">
+	<![endif]-->
+	
+	<!-- start: Favicon and Touch Icons
+	<link rel="apple-touch-icon-precomposed" sizes="144x144" href="assets/ico/apple-touch-icon-144-precomposed.png">
+	<link rel="apple-touch-icon-precomposed" sizes="114x114" href="assets/ico/apple-touch-icon-114-precomposed.png">
+	<link rel="apple-touch-icon-precomposed" sizes="72x72" href="assets/ico/apple-touch-icon-72-precomposed.png">
+	<link rel="apple-touch-icon-precomposed" sizes="57x57" href="assets/ico/apple-touch-icon-57-precomposed.png">
+	<link rel="shortcut icon" href="assets/ico/favicon.png">
+	 end: Favicon and Touch Icons -->
+		
+</head>
+
+<body>
+		<!-- start: Header -->
+	<div class="navbar">
+		<div class="navbar-inner">
+			<div class="container">
+				<button class="navbar-toggle" type="button" data-toggle="collapse" data-target=".sidebar-nav.nav-collapse">
+				      <span class="icon-bar"></span>
+				      <span class="icon-bar"></span>
+				      <span class="icon-bar"></span>
+				</button>
+                <a class="navbar-brand brand-style" href="index.html">
+                Best Buy
+                </a>
+				
+			</div>
+		</div>
+	</div>
+	<!-- start: Header -->
+	
+    <div class="container">
+			
+                
+		<!-- View 2 & 3 -->
+	            <div class="row">	
+
+	                <!-- View 2 -->
+					<div class="col-sm-6">
+						<div class="box">
+							<div class="box-header" data-original-title>
+								<h2><i class="fa fa-list-alt"></i><span class="break"></span>% of customers declared their loyalty</h2>
+								<!--div class="box-icon">
+									<a href="charts-flot.html#" class="btn-setting"><i class="fa fa-wrench"></i></a>
+									<a href="charts-flot.html#" class="btn-minimize"><i class="fa fa-chevron-up"></i></a>
+									<a href="charts-flot.html#" class="btn-close"><i class="fa fa-times"></i></a>
+								</div-->
+							</div>
+							<div class="box-content">
+								 <div id="donutchart" style="height: 300px;"></div>
+							</div>
+						</div>
+					</div><!--View 2-->
+		
+	</div><!--/container-->
+	
+  
+        <!--<script src="{{ static_url('acme-theme/js/jquery-2.0.3.min.js') }}"></script>-->
+        <script src="{{ static_url('jquery-1.8.3.js') }}"></script>
+        <script src="{{ static_url('acme-theme/js/jquery-migrate-1.2.1.min.js') }}"></script>
+	    <script src="{{ static_url('acme-theme/js/bootstrap.min.js') }}"></script>
+        <script src="{{ static_url('acme-theme/js/jquery-ui-1.10.3.custom.min.js') }}"></script>
+	    
+        <!-- theme scripts -->
+	    <script src="{{ static_url('acme-theme/js/jquery.sparkline.min.js') }}"></script>
+        <script src="{{ static_url('acme-theme/js/retina.min.js') }}"></script>
+	    <script src="{{ static_url('acme-theme/js/custom.min.js') }}"></script>
+	    <script src="{{ static_url('acme-theme/js/core.min.js') }}"></script>  
+	    
+	    <!--[if lte IE 8]><script language="javascript" type="text/javascript" src="{{ static_url('acme-theme/js/excanvas.min.js') }}"></script><![endif]-->
+	    <script src="{{ static_url('acme-theme/js/jquery.flot.min.js') }}"></script>
+	    <script src="{{ static_url('acme-theme/js/jquery.flot.pie.min.js') }}"></script>
+	    <script src="{{ static_url('acme-theme/js/d3.min.js') }}"></script>
+	    <script src="{{ static_url('acme-theme/js/xcharts.min.js') }}"></script>
+	
+	    <!-- inline scripts related to this page -->
+	    <script src="{{ static_url("underscore.js") }}"></script>
+	    <!--Plugin for autocomplete in filters-->
+	    <script src="{{ static_url('tagit/js/tag-it.min.js') }}"></script>
+	    <script type="text/javascript" src="{{ static_url("webappjs/dashboard.js") }}"></script>
+        <script src="{{ static_url('acme-theme/js/pages/index.js') }}"></script> 
+        <script src="{{ static_url("jquery.tmpl.min.js")}}"></script>
+        <script type="text/javascript" src="{{ static_url("moment.js") }}"></script>
+      
+    <!-- end: JavaScript-->
+
+
+
+</body>
+</html>

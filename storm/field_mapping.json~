@@ -1,0 +1,18 @@
+{
+  "CRDATE": {
+    "process": true,
+    "column": 2
+  },
+  "RATING": {
+    "process": true,
+    "column": 3
+  },
+  "CONTENT": {
+    "process": true,
+    "column": 4
+  },
+  "LOCATION": {
+    "process": true,
+    "column": 5
+  }
+}

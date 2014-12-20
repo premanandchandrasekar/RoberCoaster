@@ -1,0 +1,68 @@
+from twisted.python import log
+from twisted.internet import defer
+import json
+import sys
+import traceback
+from cyclone_server import httpclient
+from cyclone_server import consts
+import calendar
+import datetime
+from HTMLParser import HTMLParser
+from datetime import date, timedelta
+
+
+class MLStripper(HTMLParser):
+    def __init__(self):
+        self.reset()
+        self.fed = []
+
+    def handle_data(self, d):
+        self.fed.append(d)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'em':
+            self.fed.append("<em>")
+
+    def handle_endtag(self, tag):
+        if tag == 'em':
+            self.fed.append("</em>")
+
+    def get_data(self):
+        return ''.join(self.fed)
+
+
+def strip_tags(html):
+    s = MLStripper()
+    s.feed(html)
+    return s.get_data()
+
+
+def timestamp(crdate):
+    return calendar.timegm(crdate.timetuple()) * 1000
+
+
+class SearchEngine(object):
+    def __init__(self, conf):
+        self.config = conf
+
+    @defer.inlineCallbacks
+    def post_data(self, data, url, dbase=None):
+        log.msg('search index post_data')
+        index_url = 'http://%s:%s/%s/%s' % (
+                 self.config.host, self.config.port,
+                 self.config.index, url)
+
+        try:
+            log.msg('Indexing data Url:%s' % (index_url,))
+            data = json.dumps(data)
+            yield httpclient.fetch(index_url, method='POST', postdata=data)
+            defer.returnValue(True)
+
+        except Exception:
+            log.msg('Error indexing data url: %s - %s : %s' % (
+                index_url, sys.exc_info()[0], traceback.format_exc()))
+            if dbase:
+                dbase.add_to_index_queue(data, url, False)
+            defer.returnValue(False)
+
+    

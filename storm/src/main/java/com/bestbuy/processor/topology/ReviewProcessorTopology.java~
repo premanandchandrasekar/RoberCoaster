@@ -1,0 +1,93 @@
+package org.tataatsu.review.topology;
+
+import backtype.storm.Config;
+import backtype.storm.LocalCluster;
+import backtype.storm.StormSubmitter;
+import backtype.storm.generated.StormTopology;
+import backtype.storm.topology.TopologyBuilder;
+
+import org.tataatsu.review.bolt.*;
+import org.tataatsu.review.graphdb.Neo4JGraphPersistenceService;
+import org.tataatsu.review.metric.reporter.MetricReporterConstants;
+import org.tataatsu.review.spout.CSVSpout;
+import org.tataatsu.review.indexing.ElasticSearchConstants;
+import org.tataatsu.review.textprocessor.ReviewProcessorServiceFactory;
+import org.tataatsu.review.textprocessor.TextProcessorServiceFactory;
+
+public class ReviewProcessorTopology {
+    public static StormTopology build() {
+        TopologyBuilder builder = new TopologyBuilder();
+
+        builder.setSpout("dellcsvspout", new CSVSpout("data/customer_review.csv", ',', true));
+        builder.setBolt("indexreview", new IndexReviewBolt(), 1).shuffleGrouping("dellcsvspout");
+        builder.setBolt("persistreview", new PersistReviewBolt(), 1).shuffleGrouping("dellcsvspout");
+        builder.setBolt("senttokenize", new SentenceTokenizeBolt(), 1).shuffleGrouping("persistreview");
+
+        builder.setBolt("extractfeature", new FeatureExtractorBolt(), 1).shuffleGrouping("senttokenize");
+        builder.setBolt("extractloyalty", new LoyaltyExtractorBolt(), 1).shuffleGrouping("senttokenize");
+        builder.setBolt("extractwish", new WishExtractorBolt(), 1).shuffleGrouping("senttokenize");
+
+        builder.setBolt("persistfeature", new PersistFeatureBolt(), 1).shuffleGrouping("extractfeature");
+        builder.setBolt("persistloyalty", new PersistLoyaltyBolt(), 1).shuffleGrouping("extractloyalty");
+        builder.setBolt("persistwish", new PersistWishBolt(), 1).shuffleGrouping("extractwish");
+
+        builder.setBolt("classifysentiment", new SentimentClassifierBolt(), 1)
+                .shuffleGrouping("persistfeature")
+                .shuffleGrouping("persistloyalty")
+                .shuffleGrouping("persistwish");
+
+        return builder.createTopology();
+    }
+
+    public static void main(String[] args) throws Exception {
+        //ReviewProcessorTopology builder = new ReviewProcessorTopology();
+        StormTopology topology =  ReviewProcessorTopology.build();
+
+        Config conf = new Config();
+        conf.put(Config.TOPOLOGY_DEBUG, false);
+        conf.setDebug(false);
+
+        conf.put(ElasticSearchConstants.ES_CLUSTER_NAME, "DisQuery");
+        conf.put(ElasticSearchConstants.ES_HOST, "ec2-54-198-14-127.compute-1.amazonaws.com");
+        //ES port for REST call is 9200, Use 9300 if using the java api
+        conf.put(ElasticSearchConstants.ES_PORT, 9200);
+
+        conf.put(ElasticSearchConstants.ES_DOCUMENT_INDEX_NAME, "vocdev");
+
+        conf.put(ElasticSearchConstants.ES_DOCUMENT_TYPE_NAME, "doc");
+
+        conf.put(MetricReporterConstants.GANGLIA_HOST, "10.0.2.17");
+        conf.put(MetricReporterConstants.GANGLIA_PORT, (long)8649);
+
+        conf.put(TextProcessorServiceFactory.TEXT_PROCESSOR_HOST, "localhost");
+        conf.put(TextProcessorServiceFactory.TEXT_PROCESSOR_PORT, (long)3001);
+
+        conf.put(ReviewProcessorServiceFactory.REVIEW_PROCESSOR_HOST, "localhost");
+        conf.put(ReviewProcessorServiceFactory.REVIEW_PROCESSOR_PORT, (long)3051);
+
+        conf.put(Neo4JGraphPersistenceService.NEO4J_HOST, "ec2-54-198-73-191.compute-1.amazonaws.com");
+        conf.put(Neo4JGraphPersistenceService.NEO4J_PORT, (long)7474);
+
+        conf.put(org.tataatsu.review.db.ConnectionFactory.DB_HOST, "localhost");
+        conf.put(org.tataatsu.review.db.ConnectionFactory.DB_PORT, (long)5432);
+        conf.put(org.tataatsu.review.db.ConnectionFactory.DB_USER, "disquery");
+        conf.put(org.tataatsu.review.db.ConnectionFactory.DB_PASSWORD, "9IxZPT6tcNph");
+
+        if (args != null && args.length > 0) {
+            conf.setNumWorkers(1);
+
+            StormSubmitter.submitTopology(args[0], conf, topology);
+        }
+        else {
+            //run locally
+            conf.setMaxTaskParallelism(2);
+
+            LocalCluster cluster = new LocalCluster();
+            cluster.submitTopology("voctestmain", conf, topology);
+
+            Thread.sleep(18000000);//30 mins
+
+            cluster.shutdown();
+        }
+    }
+}
